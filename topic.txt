@@ -1,0 +1,3 @@
+docker exec -it yandex-kafka-kafka-0-1 kafka-topics.sh --create --topic test_topic --bootstrap-server kafka-0:9092 --partitions 3 --replication-factor 2
+
+docker exec -it yandex-kafka-kafka-0-1 kafka-topics.sh --describe --topic test_topic --bootstrap-server kafka-0:9092

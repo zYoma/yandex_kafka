@@ -1,0 +1,59 @@
+# Build artifacts
+/bin/
+/pkg/
+/.build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*~
+*.tmp
+*.temp
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Coverage reports
+coverage.out
+cover.out
+
+# Dependency directories
+vendor/
+node_modules/
+bower_components/
+
+# IDE specific
+*.iml
+*.ipr
+*.iws
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Icon
+._Icon\r
