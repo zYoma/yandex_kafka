@@ -10,8 +10,8 @@ import (
 	"github.com/zYoma/yandex_kafka/internal/logger"
 )
 
-// ErrConsumerStopped возникает при остановке консьюмера.
-var ErrConsumerStopped = errors.New("consumer stoped")
+// ErrAppStopped возникает при остановке приложения.
+var ErrAppStopped = errors.New("app stoped")
 
 // ProducerApp представляет приложение продюсер.
 type ProducerApp struct {

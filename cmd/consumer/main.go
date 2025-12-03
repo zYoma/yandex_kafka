@@ -41,7 +41,7 @@ func main() {
 
 	// запускаем
 	if err := consumer.Run(ctx); err != nil {
-		if errors.Is(err, application.ErrConsumerStopped) {
+		if errors.Is(err, application.ErrAppStopped) {
 			logger.Get().Info("consumer stopped")
 			return
 		}

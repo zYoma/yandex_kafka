@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os/signal"
 	"syscall"
 
 	"github.com/zYoma/yandex_kafka/internal/application"
 	"github.com/zYoma/yandex_kafka/internal/application/config"
 	"github.com/zYoma/yandex_kafka/internal/infra/clients/kafka"
+	"github.com/zYoma/yandex_kafka/internal/logger"
 )
 
 func main() {
@@ -40,6 +42,10 @@ func main() {
 
 	// запускаем продюсер
 	if err := producer.Run(ctx); err != nil {
+		if errors.Is(err, application.ErrAppStopped) {
+			logger.Get().Info("producer stopped")
+			return
+		}
 		panic(err)
 	}
 

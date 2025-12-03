@@ -7,6 +7,7 @@ import (
 
 	"github.com/confluentinc/confluent-kafka-go/schemaregistry/serde/jsonschema"
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/zYoma/yandex_kafka/internal/application"
 	"github.com/zYoma/yandex_kafka/internal/application/config"
 	"github.com/zYoma/yandex_kafka/internal/logger"
 )
@@ -30,12 +31,10 @@ func NewKafkaProducer(serializer *jsonschema.Serializer, cfg *config.Config) (*K
 	return &KafkaProducer{Serializer: serializer, Producer: producer, DeliveryChan: deliveryChan, Topic: cfg.Topic}, nil
 }
 
-
 // Stop останавливает продюсер.
 func (p *KafkaProducer) Stop() {
 	p.Producer.Close()
 	close(p.DeliveryChan)
-	logger.Get().Info("stop producer")
 }
 
 // SendMessages отправляет пачку сообщений.
@@ -88,13 +87,13 @@ func (p *KafkaProducer) SendMessages(ctx context.Context, messages []interface{}
 		case <-flushTimeout:
 			return fmt.Errorf("таймаут ожидания отправки сообщений")
 		case <-ctx.Done():
-			return ctx.Err()
+			return application.ErrAppStopped
 		case ev := <-p.DeliveryChan:
 			switch e := ev.(type) {
 			case *kafka.Message:
 				// Обработка успешной доставки
 				deliveredCount++
-				logger.Get().Sugar().Infof("Сообщение доставлено: %v", e.TopicPartition)
+				logger.Get().Sugar().Infof("Сообщение доставлено в топик %v: %v", e.TopicPartition.Topic, e.Value)
 			default:
 				// Обработка других типов событий
 				logger.Get().Sugar().Warnf("Непредвиденное событие доставки: %v", e)

@@ -19,6 +19,9 @@ type Config struct {
 	LingerMS                 int    `env:"LINGER_MS" envDefault:"5"`
 	BatchNumMessage          int    `env:"BATCH_NUM_MESSAGE" envDefault:"10000"`
 	DeliveryTimeoutMS        int    `env:"DELIVERY_TIMEOUT_MS" envDefault:"120000"`
+	FetchWaitMaxMS           int    `env:"FETCH_WAIT_MAX_MS" envDefault:"100"`
+	FetchMinByres            int    `env:"FETCH_MIN_BYRES" envDefault:"1"`
+	Retries                  int    `env:"RETRIES" envDefault:"100"`
 	SchemaRegistryServiceURL string `env:"SCHEMA_REGISTRY_SERVICE_URL" envDefault:"http://schema-registry:8081"`
 	SingleMessageConsumer    bool   `env:"ENABLE_SINGLE_MESSAGE_CONSUMER" envDefault:"true"`
 }
@@ -35,12 +38,13 @@ func GetConfig() (*Config, error) {
 // GetProducerConfig возвращает конфигурацию для продюсера Kafka
 func (c *Config) GetProducerConfig() *kafka.ConfigMap {
 	return &kafka.ConfigMap{
-		"bootstrap.servers":   c.BootstrapServers,
-		"compression.type":    c.CompressionType,
-		"acks":                c.Acks,
+		"bootstrap.servers":   c.BootstrapServers,  // Адреса брокеров Kafka
+		"compression.type":    c.CompressionType,   // Тип сжатия данных (none, gzip, snappy, lz4, zstd)
+		"acks":                c.Acks,              // Уровень гарантии доставки (0, 1, all)
 		"linger.ms":           c.LingerMS,          // подержать отправку, чтобы накопить батч
 		"batch.num.messages":  c.BatchNumMessage,   // ограничение размера батча по сообщениям
 		"delivery.timeout.ms": c.DeliveryTimeoutMS, // общий таймаут доставки
+		"retries":             c.Retries,           // число ретраев при неудачной отправке
 	}
 }
 
@@ -52,9 +56,11 @@ func (c *Config) GetConsumerConfig() *kafka.ConfigMap {
 	}
 
 	return &kafka.ConfigMap{
-		"bootstrap.servers":  c.BootstrapServers,
-		"group.id":           c.GroupId,
-		"auto.offset.reset":  c.AutoOffsetReset,
-		"enable.auto.commit": enableAutoCommit,
+		"bootstrap.servers":  c.BootstrapServers, // Адреса брокеров Kafka
+		"group.id":           c.GroupId,          // ID группы потребителей
+		"auto.offset.reset":  c.AutoOffsetReset,  // Политика сброса оффсетов при отсутствии сохраненных значений
+		"enable.auto.commit": enableAutoCommit,   // Включить автоматический коммит оффсетов
+		"fetch.wait.max.ms":  c.FetchWaitMaxMS,   // Максимальное время ожидания данных при fetch запросе
+		"fetch.min.bytes":    c.FetchMinByres,    // Минимальное количество байт, которое должно быть доступно для возврата
 	}
 }

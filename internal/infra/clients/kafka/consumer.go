@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/schemaregistry/serde/jsonschema"
@@ -13,14 +14,12 @@ import (
 	"github.com/zYoma/yandex_kafka/internal/logger"
 )
 
-// Таймаут для запроса
-const timeoutMs = 100
-
-// Таймаут для запроса poll
-const batchTimeoutMs = 5000
-
-// Размер батча
-const batchSize = 100
+// Таймауты и параметры
+const (
+	timeoutMs      = 100
+	batchSize      = 10
+	batchTimeoutMs = 1000
+)
 
 // KafkaConsumer структура клиента
 type KafkaConsumer struct {
@@ -29,6 +28,7 @@ type KafkaConsumer struct {
 	Config       *config.Config
 }
 
+// partitionGroup структура для группирования сообщений по партициям
 type partitionGroup struct {
 	tp   kafka.TopicPartition
 	msgs []*kafka.Message
@@ -59,7 +59,7 @@ func (c *KafkaConsumer) StartSingleMessage(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return application.ErrConsumerStopped
+			return application.ErrAppStopped
 
 		default:
 
@@ -74,9 +74,8 @@ func (c *KafkaConsumer) StartSingleMessage(ctx context.Context) error {
 
 			// Десериализация сообщения
 			var product domain.Product
-			err = c.Deserializer.DeserializeInto(c.Config.Topic, msg.Value, &product)
+			err = c.deserializeMessage(msg, &product)
 			if err != nil {
-				logger.Get().Sugar().Errorf("Deserialize error: %v\n", err)
 				continue
 			}
 
@@ -87,6 +86,16 @@ func (c *KafkaConsumer) StartSingleMessage(ctx context.Context) error {
 		}
 	}
 
+}
+
+// Десериализация сообщения
+func (c *KafkaConsumer) deserializeMessage(msg *kafka.Message, data interface{}) error {
+	err := c.Deserializer.DeserializeInto(c.Config.Topic, msg.Value, data)
+	if err != nil {
+		logger.Get().Sugar().Errorf("Deserialize error: %v\n", err)
+		return err
+	}
+	return nil
 }
 
 // Subscribe подписывает consumer на указанные топики
@@ -101,7 +110,12 @@ func (c *KafkaConsumer) Subscribe() error {
 
 // Start запускает консьюмер в BatchMessage режиме.
 func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
-	defer c.Consumer.Close()
+	// чтобы закрыть консьюмер нарантированно 1 раз
+	var once sync.Once
+
+	defer once.Do(func() {
+		c.Consumer.Close()
+	})
 
 	// Подписываемся на топики
 	err := c.Subscribe()
@@ -111,37 +125,48 @@ func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
 
 	for {
 		select {
+		// если контекст отменен - закрываем консьюмер и возвращаем ошибку
 		case <-ctx.Done():
-			return application.ErrConsumerStopped
+			once.Do(func() {
+				c.Consumer.Close()
+			})
+			return application.ErrAppStopped
 		default:
 			// Получаем следующую пачку сообщений
+
+			// для того, чтобы ждать пока не наберется пачка нужного размера или не истечет время ожидания ее сбора
 			batchTimeout := time.Duration(batchTimeoutMs) * time.Millisecond
 			deadline := time.Now().Add(batchTimeout)
 			batch := make([]*kafka.Message, 0, batchSize)
 
 			// Собираем пачку сообщений
-
 			for len(batch) < batchSize {
 				remaining := time.Until(deadline)
+				// если дедлайн вышел, прекращаем ждать новые сообщения
 				if remaining <= 0 {
 					break
 				}
 
-				ev := c.Consumer.Poll(int(remaining.Milliseconds()))
+				ev := c.Consumer.Poll(timeoutMs)
 				if ev == nil {
+					time.Sleep(50 * time.Millisecond) // Задержка для снижения нагрузки
 					continue
 				}
 
 				switch e := ev.(type) {
+				// сообщения
 				case *kafka.Message:
 					batch = append(batch, e)
-
+				//ошибки
 				case kafka.Error:
-					logger.Get().Sugar().Infof("Consumer error: %v\n", e)
+					logger.Get().Sugar().Warnf("%% Error: %v: %v\n", e.Code(), e)
+					if e.Code() == kafka.ErrAllBrokersDown {
+						return fmt.Errorf("брокер недоступен, %v", e.Code())
+					}
 					continue
-
+				// другие события игнорируем
 				default:
-					// другие события игнорируем
+					logger.Get().Sugar().Infof("Ignored %v\n", e)
 				}
 			}
 
@@ -150,13 +175,11 @@ func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
 				continue
 			}
 
-			// Группируем сообщения по партициям
+			// Группируем сообщения по партициям чтобы паралельно их обработать
 			partitionBatches := make(map[string]*partitionGroup)
 			for _, msg := range batch {
 				topic := *msg.TopicPartition.Topic
-
 				key := fmt.Sprintf("%s:%d", topic, int(msg.TopicPartition.Partition))
-
 				grp, ok := partitionBatches[key]
 				if !ok {
 					grp = &partitionGroup{
@@ -171,15 +194,23 @@ func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
 				grp.msgs = append(grp.msgs, msg)
 			}
 
+			// Создаем дочерний контекст для текущего батча
+			ctxProcess, cancel := context.WithCancel(ctx)
+			defer cancel()
+
 			// Создаем канал для получения результатов обработки
 			resultChan := make(chan error, len(partitionBatches))
 
 			for _, grp := range partitionBatches {
-				// клонируем значения для горутины
+				// распараллеливаем обработку партиций в горутинах
 				tp := grp.tp
 				msgs := grp.msgs
 				go func(tp kafka.TopicPartition, msgs []*kafka.Message) {
-					resultChan <- c.processPartition(ctx, tp, msgs)
+					err := c.processPartition(ctxProcess, tp, msgs)
+					select {
+					case resultChan <- err:
+					case <-ctxProcess.Done(): // Если контекст отменен, игнорируем результат
+					}
 				}(tp, msgs)
 			}
 
@@ -188,10 +219,12 @@ func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
 				select {
 				case err := <-resultChan:
 					if err != nil {
+						cancel()
 						return err
 					}
 				case <-ctx.Done():
-					return application.ErrConsumerStopped
+					cancel()
+					return application.ErrAppStopped
 				}
 			}
 		}
@@ -208,9 +241,8 @@ func (c *KafkaConsumer) processPartition(ctx context.Context, tp kafka.TopicPart
 	var products []domain.Product
 	for _, msg := range msgs {
 		var product domain.Product
-		err := c.Deserializer.DeserializeInto(c.Config.Topic, msg.Value, &product)
+		err := c.deserializeMessage(msg, &product)
 		if err != nil {
-			logger.Get().Sugar().Errorf("Deserialize error: %v\n", err)
 			continue
 		}
 		products = append(products, product)
@@ -218,7 +250,7 @@ func (c *KafkaConsumer) processPartition(ctx context.Context, tp kafka.TopicPart
 
 	logger.Get().Sugar().Infof("Got %d messages from partition %d, first offset %d", len(products), tp.Partition, firstOffset)
 
-	// обработка сообщений
+	// Обработка сообщений.Если обработка успешна, коммитит сообщения. Иначе - возвращаем весь батч на повторную обработку
 	if domain.ProcessProducts(ctx, products) {
 		return c.commitPartition(tp, lastOffset)
 	} else {
@@ -250,10 +282,10 @@ func (c *KafkaConsumer) rollbackPartition(tp kafka.TopicPartition, firstOffset k
 		Offset:    firstOffset,
 	}, 0)
 	if err != nil {
-		// Проверяем, является ли ошибка "Outdated"
+		// Может произойти перебалансировка перед seek, в таком случае пропускаем, так как партиции уже у другого консьюмера
 		if kafkaErr, ok := err.(kafka.Error); ok && kafkaErr.Code() == kafka.ErrOutdated {
 			logger.Get().Sugar().Warnf("Outdated offset error for partition %v: %v. Continuing with next partition", tp.Partition, err)
-			return nil // Просто продолжаем, так как offset уже не актуален
+			return nil
 		}
 		logger.Get().Sugar().Errorf("Seek error for partition %v: %v\n", tp, err)
 		// нельзя идти дальше, иначе потеряем сообщения

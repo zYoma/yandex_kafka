@@ -13,6 +13,7 @@ import (
 	"github.com/zYoma/yandex_kafka/internal/logger"
 )
 
+// SchemaMigration мигрицая схемы в Schema Registry
 func SchemaMigration(cfg *config.Config) (*jsSchema.Serializer, *jsSchema.Deserializer, error) {
 	// Конфигурация для Schema Registry
 	srClient, err := schemaregistry.NewClient(schemaregistry.NewConfig(cfg.SchemaRegistryServiceURL))

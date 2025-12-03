@@ -15,7 +15,7 @@ type Product struct {
 	Name string `json:"name"`
 }
 
-// GenerateAndSendProducts генерирует 10 продуктов и отправляет их через Kafka
+// GenerateAndSendProducts генерирует сообщения и отправляет их через Kafka
 func GenerateAndSendProducts(ctx context.Context, producer interfaces.Producer) error {
 	products := GenerateProducts()
 
