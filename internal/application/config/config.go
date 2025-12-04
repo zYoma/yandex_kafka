@@ -22,6 +22,7 @@ type Config struct {
 	FetchWaitMaxMS           int    `env:"FETCH_WAIT_MAX_MS" envDefault:"100"`
 	FetchMinByres            int    `env:"FETCH_MIN_BYRES" envDefault:"1"`
 	Retries                  int    `env:"RETRIES" envDefault:"100"`
+	MaxPollIntervalMS        int    `env:"MAX_POLL_INTERVAL_MS" envDefault:"300000"`
 	SchemaRegistryServiceURL string `env:"SCHEMA_REGISTRY_SERVICE_URL" envDefault:"http://schema-registry:8081"`
 	SingleMessageConsumer    bool   `env:"ENABLE_SINGLE_MESSAGE_CONSUMER" envDefault:"true"`
 }
@@ -56,11 +57,12 @@ func (c *Config) GetConsumerConfig() *kafka.ConfigMap {
 	}
 
 	return &kafka.ConfigMap{
-		"bootstrap.servers":  c.BootstrapServers, // Адреса брокеров Kafka
-		"group.id":           c.GroupId,          // ID группы потребителей
-		"auto.offset.reset":  c.AutoOffsetReset,  // Политика сброса оффсетов при отсутствии сохраненных значений
-		"enable.auto.commit": enableAutoCommit,   // Включить автоматический коммит оффсетов
-		"fetch.wait.max.ms":  c.FetchWaitMaxMS,   // Максимальное время ожидания данных при fetch запросе
-		"fetch.min.bytes":    c.FetchMinByres,    // Минимальное количество байт, которое должно быть доступно для возврата
+		"bootstrap.servers":    c.BootstrapServers,  // Адреса брокеров Kafka
+		"group.id":             c.GroupId,           // ID группы потребителей
+		"auto.offset.reset":    c.AutoOffsetReset,   // Политика сброса оффсетов при отсутствии сохраненных значений
+		"enable.auto.commit":   enableAutoCommit,    // Включить автоматический коммит оффсетов
+		"fetch.wait.max.ms":    c.FetchWaitMaxMS,    // Максимальное время ожидания данных при fetch запросе
+		"fetch.min.bytes":      c.FetchMinByres,     // Минимальное количество байт, которое должно быть доступно для возврата
+		"max.poll.interval.ms": c.MaxPollIntervalMS, // Максимальное время между вызовами на получение сообщений
 	}
 }

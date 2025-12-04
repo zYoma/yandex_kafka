@@ -91,9 +91,21 @@ func (p *KafkaProducer) SendMessages(ctx context.Context, messages []interface{}
 		case ev := <-p.DeliveryChan:
 			switch e := ev.(type) {
 			case *kafka.Message:
-				// Обработка успешной доставки
-				deliveredCount++
-				logger.Get().Sugar().Infof("Сообщение доставлено в топик %v: %v", e.TopicPartition.Topic, e.Value)
+				if e.TopicPartition.Error != nil {
+					logger.Get().Sugar().Errorf("Delivery failed: %v", e.TopicPartition.Error)
+				} else {
+					// Обработка успешной доставки
+					deliveredCount++
+					logger.Get().Sugar().Infof("Сообщение доставлено в топик %s [%d] at offset %v",
+						*e.TopicPartition.Topic, e.TopicPartition.Partition, e.TopicPartition.Offset)
+				}
+			case kafka.Error:
+				if e.IsFatal() {
+					// при фатальной ошибке, продолжение работы невозможно
+					return fmt.Errorf("FATAL ERROR: %v", e)
+				}
+				// Обработка неудачной доставки
+				logger.Get().Sugar().Errorf("Ошибка доставки: %v", e)
 			default:
 				// Обработка других типов событий
 				logger.Get().Sugar().Warnf("Непредвиденное событие доставки: %v", e)

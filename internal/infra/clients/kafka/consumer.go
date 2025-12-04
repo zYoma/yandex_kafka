@@ -3,7 +3,6 @@ package kafka
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/schemaregistry/serde/jsonschema"
@@ -17,7 +16,7 @@ import (
 // Таймауты и параметры
 const (
 	timeoutMs      = 100
-	batchSize      = 10
+	batchSize      = 50
 	batchTimeoutMs = 1000
 )
 
@@ -101,7 +100,7 @@ func (c *KafkaConsumer) deserializeMessage(msg *kafka.Message, data interface{})
 // Subscribe подписывает consumer на указанные топики
 func (c *KafkaConsumer) Subscribe() error {
 	topics := []string{c.Config.Topic}
-	err := c.Consumer.SubscribeTopics(topics, nil)
+	err := c.Consumer.SubscribeTopics(topics, c.rebalanceCallback)
 	if err != nil {
 		return fmt.Errorf("Невозможно подписаться на топик: %s\n", err)
 	}
@@ -110,12 +109,7 @@ func (c *KafkaConsumer) Subscribe() error {
 
 // Start запускает консьюмер в BatchMessage режиме.
 func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
-	// чтобы закрыть консьюмер нарантированно 1 раз
-	var once sync.Once
-
-	defer once.Do(func() {
-		c.Consumer.Close()
-	})
+	defer c.Consumer.Close()
 
 	// Подписываемся на топики
 	err := c.Subscribe()
@@ -127,9 +121,6 @@ func (c *KafkaConsumer) StartBatchMessage(ctx context.Context) error {
 		select {
 		// если контекст отменен - закрываем консьюмер и возвращаем ошибку
 		case <-ctx.Done():
-			once.Do(func() {
-				c.Consumer.Close()
-			})
 			return application.ErrAppStopped
 		default:
 			// Получаем следующую пачку сообщений
@@ -250,10 +241,31 @@ func (c *KafkaConsumer) processPartition(ctx context.Context, tp kafka.TopicPart
 
 	logger.Get().Sugar().Infof("Got %d messages from partition %d, first offset %d", len(products), tp.Partition, firstOffset)
 
-	// Обработка сообщений.Если обработка успешна, коммитит сообщения. Иначе - возвращаем весь батч на повторную обработку
-	if domain.ProcessProducts(ctx, products) {
-		return c.commitPartition(tp, lastOffset)
-	} else {
+	// Создаем контекст с таймаутом, меньше чем max_poll_interval_ms
+	maxPollInterval := time.Duration(c.Config.MaxPollIntervalMS) * time.Millisecond
+	timeout := maxPollInterval - (maxPollInterval / 10) // Убираем 10% как запасной период
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Обработка сообщений.
+	done := make(chan bool, 1)
+	go func() {
+		done <- domain.ProcessProducts(ctx, products)
+	}()
+
+	select {
+	case success := <-done:
+		if success {
+			// Если обработка успешна, коммитит сообщения.
+			return c.commitPartition(tp, lastOffset)
+		} else {
+			// Иначе - возвращаем весь батч на повторную обработку
+			return c.rollbackPartition(tp, firstOffset)
+		}
+	case <-ctx.Done():
+		// Таймаут превышен, возвращаем батч на повторную обработку
+		logger.Get().Sugar().Warnf("Processing timeout for partition %d, rolling back", tp.Partition)
 		return c.rollbackPartition(tp, firstOffset)
 	}
 }
@@ -292,5 +304,30 @@ func (c *KafkaConsumer) rollbackPartition(tp kafka.TopicPartition, firstOffset k
 		return fmt.Errorf("error seek partition, %v", err)
 	}
 	logger.Get().Sugar().Infof("откатываем offset %v, партиция %v", firstOffset, tp.Partition)
+	return nil
+}
+
+func (c *KafkaConsumer) rebalanceCallback(k *kafka.Consumer, event kafka.Event) error {
+	switch ev := event.(type) {
+
+	// событие, когда консьюмер получил новые партиции
+	case kafka.AssignedPartitions:
+		logger.Get().Sugar().Infof("%% %s rebalance: %d new partition(s) assigned: %v\n",
+			k.GetRebalanceProtocol(), len(ev.Partitions), ev.Partitions)
+
+		// событие, перед тем как консьюмер потеряет партитии
+	case kafka.RevokedPartitions:
+		logger.Get().Sugar().Infof("%% %s rebalance: %d partition(s) revoked: %v\n",
+			k.GetRebalanceProtocol(), len(ev.Partitions), ev.Partitions)
+
+		if k.AssignmentLost() {
+			// партиции могут уже быть отозваны для консьюмера, смещения по ним не удастся закоммитить
+			logger.Get().Warn("Assignment lost involuntarily, commit may fail")
+		}
+
+	default:
+		logger.Get().Sugar().Warnf("Unxpected event type: %v\n", event)
+	}
+
 	return nil
 }
